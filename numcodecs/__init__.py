@@ -68,6 +68,12 @@ try:
 except ImportError:  # pragma: no cover
     pass
 
+try:
+    from numcodecs.jpeg2000 import JPEG2000
+    register_codec(JPEG2000)
+except ImportError:
+    pass
+
 from numcodecs.astype import AsType
 register_codec(AsType)
 

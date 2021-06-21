@@ -2,10 +2,11 @@ from glob import glob
 import os
 from setuptools import setup, Extension
 import cpuinfo
+import pathlib
 import sys
-from distutils.command.build_ext import build_ext
 from distutils.errors import CCompilerError, DistutilsExecError, \
     DistutilsPlatformError
+from distutils.command.build_ext import build_ext
 
 try:
     from Cython.Build import cythonize
@@ -250,6 +251,69 @@ def compat_extension():
     return extensions
 
 
+def jpeg2000_extension():
+    info('Setting up JPEG 2000 extension')
+
+    extra_compile_args = list(base_compile_args)
+
+    # Test for presence and location of openjpeg.h
+    openjpeg_libdir = 'OPENJPEG_LIBDIR'
+    openjpeg_includedir = 'OPENJPEG_INCLUDEDIR'
+    if openjpeg_libdir not in os.environ or \
+       openjpeg_includedir not in os.environ:
+        info('Not building JPEG2000: OPENJPEG_LIBDIR and OPENJPEG_INCLUDEDIR '
+             'must be defined.')
+        return []
+
+    openjpeg_include_path = pathlib.Path(os.environ[openjpeg_includedir])
+    openjpeg_lib_path = pathlib.Path(os.environ[openjpeg_libdir])
+    if not openjpeg_include_path.exists():
+        raise BuildFailed("OPENJPEG_INCLUDEDIR directory does not exist:" +
+                          str(openjpeg_include_path))
+    if not openjpeg_lib_path.exists():
+        raise BuildFailed('OPENJPEG_LIBDIR directory does not exist' +
+                          str(openjpeg_lib_path))
+    #
+    # Test for openjpeg-N.M/openjpeg.h
+    #
+    if not (openjpeg_include_path / 'openjpeg.h').exists():
+        best = (0, 0)
+        include_dir = None
+        for subdir in openjpeg_include_path.glob('openjpeg-*/openjpeg.h'):
+            try:
+                majorminorstr = subdir.parent.name.split('-')[1]
+                majorminor = tuple([int(_) for _ in majorminorstr.split(".")])
+                if majorminor > best:
+                    include_dir = os.fspath(subdir.parent)
+                    best = majorminor
+            except:
+                pass
+        if include_dir is None:
+            raise BuildFailed('Could not find openjpeg.h')
+    else:
+        include_dir = os.fspath(openjpeg_include_path)
+
+    include_dirs = [os.fspath(openjpeg_include_path), include_dir,
+                    '3rdparty/openjpeg']
+    if have_cython:
+        sources = ['numcodecs/_jpeg2k.pyx']
+    else:
+        sources = ['numcodecs/_jpeg2k.cpp']
+    extensions = [
+        Extension(
+            name='numcodecs._jpeg2k',
+            sources=sources,
+            include_dirs=include_dirs,
+            extra_compile_args=extra_compile_args,
+            libraries=['openjp2'],
+            library_dirs=[os.fspath(openjpeg_lib_path)]
+        )
+    ]
+    if have_cython:
+        extensions = cythonize(extensions)
+    return extensions
+
+
 if sys.platform == 'win32':
     ext_errors = (CCompilerError, DistutilsExecError, DistutilsPlatformError,
                   IOError, ValueError)
@@ -278,6 +342,13 @@ class ve_build_ext(build_ext):
             error(e)
             raise BuildFailed()
 
+    def finalize_options(self):
+        build_ext.finalize_options(self)
+        # Prevent numpy from thinking it is still in its setup process:
+        __builtins__.__NUMPY_SETUP__ = False
+        import numpy
+        self.include_dirs.append(numpy.get_include())
+
 
 DESCRIPTION = ("A Python package providing buffer compression and "
                "transformation codecs for use in data storage and "
@@ -291,7 +362,8 @@ def run_setup(with_extensions):
 
     if with_extensions:
         ext_modules = (blosc_extension() + zstd_extension() + lz4_extension() +
-                       compat_extension() + vlen_extension())
+                       compat_extension() + vlen_extension() +
+                       jpeg2000_extension())
         cmdclass = dict(build_ext=ve_build_ext)
     else:
         ext_modules = []
